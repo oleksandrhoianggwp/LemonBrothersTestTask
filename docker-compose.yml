@@ -11,6 +11,7 @@ x-backend-environment: &backend-environment
   LLM_MODEL: ${LLM_MODEL:-gpt-5-mini}
   AMAZON_BESTSELLERS_URL: ${AMAZON_BESTSELLERS_URL:-https://www.amazon.com/Best-Sellers-Home-Kitchen/zgbs/home-garden/}
   AMAZON_MAX_PRODUCTS: ${AMAZON_MAX_PRODUCTS:-20}
+  TRENDS_RATE_LIMIT_COOLDOWN_SECONDS: ${TRENDS_RATE_LIMIT_COOLDOWN_SECONDS:-900}
 
 x-backend-image: &backend-image
   image: lemonbrothers-backend:local
@@ -74,7 +75,11 @@ services:
 
   celery-worker:
     <<: *backend-image
-    environment: *backend-environment
+    environment:
+      <<: *backend-environment
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     command:
       [
         "celery",
