@@ -19,6 +19,7 @@ export interface Product {
   updated_at: string;
   last_scraped_at: string | null;
   last_trend_collected_at: string | null;
+  last_trend_attempted_at: string | null;
   last_scored_at: string | null;
 }
 

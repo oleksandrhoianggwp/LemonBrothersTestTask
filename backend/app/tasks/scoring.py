@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 @celery_app.task(name="app.tasks.scoring.rescore_all_products")
-def rescore_all_products() -> dict[str, int]:
+def rescore_all_products(product_ids: list[int] | None = None) -> dict[str, int]:
     logger.info("product_scoring_started")
     settings = get_settings()
     engine = ScoringEngine(settings)
@@ -31,9 +31,15 @@ def rescore_all_products() -> dict[str, int]:
             )
             for row in historical_rows
         ]
-        product_ids = list(db.scalars(select(Product.id)).all())
+        if product_ids is None:
+            target_product_ids = list(db.scalars(select(Product.id)).all())
+        else:
+            requested_ids = list(dict.fromkeys(product_ids))
+            target_product_ids = list(
+                db.scalars(select(Product.id).where(Product.id.in_(requested_ids))).all()
+            )
     scored = 0
-    for product_id in product_ids:
+    for product_id in target_product_ids:
         with SessionLocal.begin() as db:
             product = db.get(Product, product_id)
             if product is None:

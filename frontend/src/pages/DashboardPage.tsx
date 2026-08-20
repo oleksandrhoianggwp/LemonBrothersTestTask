@@ -53,6 +53,7 @@ export function DashboardPage() {
 
   const scored = products.filter((product) => product.score !== null);
   const average = scored.length ? Math.round(scored.reduce((sum, product) => sum + (product.score ?? 0), 0) / scored.length) : null;
+  const provisional = scored.filter((product) => trendFreshness(product).state !== "fresh").length;
   const taskOutcome = task ? describeTask(task) : null;
 
   return (
@@ -69,8 +70,8 @@ export function DashboardPage() {
       {error && <div className="alert alert-error">{error}</div>}
       <section className="metrics-grid">
         <article><span>Tracked products</span><strong>{total}</strong><small>Amazon candidates</small></article>
-        <article><span>Average score</span><strong>{average ?? "—"}</strong><small>Across scored products</small></article>
-        <article><span>High potential</span><strong>{products.filter((product) => (product.score ?? 0) >= 75).length}</strong><small>Score 75 or above</small></article>
+        <article><span>Average score</span><strong>{average ?? "—"}</strong><small>{provisional ? `${provisional} score${provisional === 1 ? "" : "s"} use stale or missing trends` : "Across fresh scored products"}</small></article>
+        <article><span>High potential</span><strong>{products.filter((product) => (product.score ?? 0) >= 75).length}</strong><small>Score 75 or above · verify freshness</small></article>
       </section>
       <section className="data-panel">
         <div className="panel-heading"><div><h2>Product pipeline</h2><p>Latest persisted collection and scoring results.</p></div></div>
@@ -85,14 +86,16 @@ function ProductTable({ products }: { products: Product[] }) {
     <div className="table-wrap">
       <table className="product-table">
         <thead><tr><th>Product</th><th>Market proof</th><th>Trend</th><th>Boost</th><th>Score</th><th>Reasoning</th></tr></thead>
-        <tbody>{products.map((product) => <tr key={product.id}>
+        <tbody>{products.map((product) => {
+          const freshness = trendFreshness(product);
+          return <tr key={product.id}>
           <td><div className="product-cell"><img src={product.image_url} alt="" /><div><a href={product.product_url} target="_blank" rel="noreferrer">{product.title}</a><span>{product.category}</span><small>{product.price ? `$${Number(product.price).toFixed(2)}` : "Price unavailable"}</small></div></div></td>
           <td><strong>{product.rating?.toFixed(1) ?? "—"} ★</strong><span className="cell-note">{product.reviews_count.toLocaleString()} reviews</span></td>
-          <td><strong>{Math.round(product.trend_score)}/100</strong><span className={`cell-note ${(product.trend_change_percent ?? 0) >= 0 ? "positive" : "negative"}`}>{product.trend_change_percent === null ? "Direction pending" : `${product.trend_change_percent >= 0 ? "+" : ""}${product.trend_change_percent.toFixed(1)}%`}</span><span className="cell-note">{product.last_trend_collected_at ? `As of ${new Date(product.last_trend_collected_at).toLocaleString()}` : "No saved snapshot"}</span></td>
+          <td><strong>{product.last_trend_collected_at ? `${Math.round(product.trend_score)}/100` : "—"}</strong><span className={`cell-note ${(product.trend_change_percent ?? 0) >= 0 ? "positive" : "negative"}`}>{product.last_trend_collected_at ? (product.trend_change_percent === null ? "Direction pending" : `${product.trend_change_percent >= 0 ? "+" : ""}${product.trend_change_percent.toFixed(1)}%`) : "Trend unavailable"}</span><span className={`cell-note ${freshness.state === "fresh" ? "positive" : freshness.state === "stale" ? "negative" : ""}`}>{freshness.label}</span></td>
           <td><strong>{product.boost_score.toFixed(1)}/20</strong><span className="cell-note">Historical fit</span></td>
           <td><ScoreBadge score={product.score} /><span className="cell-note">{product.score_source ?? "Pending"}</span></td>
           <td className="reasoning"><p>{product.reasoning ?? "Scoring has not run yet."}</p><small>{product.last_scored_at ? `Scored ${new Date(product.last_scored_at).toLocaleString()}` : "Not scored"}</small></td>
-        </tr>)}</tbody>
+        </tr>})}</tbody>
       </table>
     </div>
   );
@@ -101,6 +104,18 @@ function ProductTable({ products }: { products: Product[] }) {
 function numericResult(task: TaskState, key: string): number | null {
   const value = task.result?.[key];
   return typeof value === "number" ? value : null;
+}
+
+function trendFreshness(product: Product): { state: "fresh" | "stale" | "none"; label: string } {
+  if (!product.last_trend_collected_at) {
+    return { state: "none", label: "No saved trend data" };
+  }
+  const collectedAt = new Date(product.last_trend_collected_at);
+  const attemptedAt = product.last_trend_attempted_at ? new Date(product.last_trend_attempted_at) : null;
+  if (attemptedAt && attemptedAt.getTime() > collectedAt.getTime()) {
+    return { state: "stale", label: `Stale: last successful collection ${collectedAt.toLocaleString()}` };
+  }
+  return { state: "fresh", label: `Fresh: ${collectedAt.toLocaleString()}` };
 }
 
 function describeTask(task: TaskState): { label: string; detail: string; tone: string } {
@@ -114,9 +129,12 @@ function describeTask(task: TaskState): { label: string; detail: string; tone: s
   const failed = numericResult(task, "failed");
   const rateLimited = numericResult(task, "rate_limited");
   if (collected !== null && failed !== null) {
-    const detail = `${collected} trend snapshots collected; ${failed} failed${rateLimited ? ` (${rateLimited} rate-limited)` : ""}.`;
+    const cooldownActive = task.result?.cooldown_active === true;
+    const cooldownSeconds = numericResult(task, "cooldown_seconds_remaining");
+    const cooldownDetail = cooldownActive ? ` Cooldown active${cooldownSeconds ? ` for up to ${Math.ceil(cooldownSeconds / 60)} min` : ""}; no browser retry was started.` : "";
+    const detail = `${collected} trend snapshots collected; ${failed} failed${rateLimited ? ` (${rateLimited} rate-limited)` : ""}.${cooldownDetail}`;
     return failed > 0
-      ? { label: collected > 0 ? "Completed with warnings" : "No fresh trend data", detail, tone: "warning" }
+      ? { label: cooldownActive && collected === 0 ? "Trend cooldown active" : collected > 0 ? "Completed with warnings" : "No fresh trend data", detail, tone: "warning" }
       : { label: "Trend collection completed", detail, tone: "success" };
   }
   const scraped = numericResult(task, "scraped");
