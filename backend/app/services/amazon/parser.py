@@ -22,6 +22,16 @@ def normalize_whitespace(value: str) -> str:
     return " ".join(value.split())
 
 
+def normalize_category(value: str | None) -> str:
+    normalized = normalize_whitespace(value or "")
+    prefix = "best sellers in "
+    if normalized.lower().startswith(prefix):
+        return normalized[len(prefix) :].strip() or "Unknown"
+    if normalized.lower() == "amazon best sellers":
+        return "Unknown"
+    return normalized or "Unknown"
+
+
 def parse_price(value: str | None) -> Decimal | None:
     if not value:
         return None
@@ -92,10 +102,17 @@ def _canonical_product_url(url: str, base_url: str) -> tuple[str, str | None]:
 
 def parse_amazon_html(html: str, base_url: str) -> list[ScrapedProduct]:
     soup = BeautifulSoup(html, "html.parser")
-    category = _text(
-        soup,
-        ("#zg_banner_text", "h1", "._cDEzb_card-title_2sYgw", "[data-testid='category-title']"),
-    ) or "Amazon Best Sellers"
+    category = normalize_category(
+        _text(
+            soup,
+            (
+                "[data-testid='category-title']",
+                "._cDEzb_card-title_2sYgw",
+                "h1",
+                "#zg_banner_text",
+            ),
+        )
+    )
     cards = soup.select(
         "[data-asin]:has(a[href*='/dp/']), .zg-grid-general-faceout, "
         ".p13n-sc-uncoverable-faceout"

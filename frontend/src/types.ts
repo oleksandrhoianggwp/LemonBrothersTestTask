@@ -18,6 +18,7 @@ export interface Product {
   scoring_provider: string | null;
   updated_at: string;
   last_scraped_at: string | null;
+  last_trend_collected_at: string | null;
   last_scored_at: string | null;
 }
 
@@ -32,7 +33,7 @@ export interface TaskAccepted {
 }
 
 export interface TaskState extends TaskAccepted {
-  result?: unknown;
+  result?: Record<string, unknown> | null;
 }
 
 export interface SalesBoostProduct {

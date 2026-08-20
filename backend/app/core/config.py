@@ -33,7 +33,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(default="", repr=False)
     llm_timeout_seconds: float = 45.0
 
-    amazon_bestsellers_url: str = "https://www.amazon.com/Best-Sellers/zgbs"
+    amazon_bestsellers_url: str = (
+        "https://www.amazon.com/Best-Sellers-Home-Kitchen/zgbs/home-garden/"
+    )
     amazon_max_products: int = Field(default=20, ge=1, le=100)
 
     def provider_api_key(self) -> str:

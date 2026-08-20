@@ -53,6 +53,7 @@ export function DashboardPage() {
 
   const scored = products.filter((product) => product.score !== null);
   const average = scored.length ? Math.round(scored.reduce((sum, product) => sum + (product.score ?? 0), 0) / scored.length) : null;
+  const taskOutcome = task ? describeTask(task) : null;
 
   return (
     <Layout>
@@ -64,7 +65,7 @@ export function DashboardPage() {
           <button className="button button-ghost" onClick={() => void loadProducts()}>Refresh</button>
         </div>
       </section>
-      {task && <div className={`task-banner ${task.status === "FAILURE" ? "failed" : ""}`}><span className="status-dot" /><strong>Task {task.status.toLowerCase()}</strong><span>{task.task_id.slice(0, 12)}…</span></div>}
+      {task && taskOutcome && <div className={`task-banner ${taskOutcome.tone}`}><span className={`status-dot ${terminalStates.has(task.status) ? "complete" : ""}`} /><strong>{taskOutcome.label}</strong><span>{taskOutcome.detail}</span><small>{task.task_id.slice(0, 12)}…</small></div>}
       {error && <div className="alert alert-error">{error}</div>}
       <section className="metrics-grid">
         <article><span>Tracked products</span><strong>{total}</strong><small>Amazon candidates</small></article>
@@ -87,12 +88,40 @@ function ProductTable({ products }: { products: Product[] }) {
         <tbody>{products.map((product) => <tr key={product.id}>
           <td><div className="product-cell"><img src={product.image_url} alt="" /><div><a href={product.product_url} target="_blank" rel="noreferrer">{product.title}</a><span>{product.category}</span><small>{product.price ? `$${Number(product.price).toFixed(2)}` : "Price unavailable"}</small></div></div></td>
           <td><strong>{product.rating?.toFixed(1) ?? "—"} ★</strong><span className="cell-note">{product.reviews_count.toLocaleString()} reviews</span></td>
-          <td><strong>{Math.round(product.trend_score)}/100</strong><span className={`cell-note ${(product.trend_change_percent ?? 0) >= 0 ? "positive" : "negative"}`}>{product.trend_change_percent === null ? "Direction pending" : `${product.trend_change_percent >= 0 ? "+" : ""}${product.trend_change_percent.toFixed(1)}%`}</span></td>
+          <td><strong>{Math.round(product.trend_score)}/100</strong><span className={`cell-note ${(product.trend_change_percent ?? 0) >= 0 ? "positive" : "negative"}`}>{product.trend_change_percent === null ? "Direction pending" : `${product.trend_change_percent >= 0 ? "+" : ""}${product.trend_change_percent.toFixed(1)}%`}</span><span className="cell-note">{product.last_trend_collected_at ? `As of ${new Date(product.last_trend_collected_at).toLocaleString()}` : "No saved snapshot"}</span></td>
           <td><strong>{product.boost_score.toFixed(1)}/20</strong><span className="cell-note">Historical fit</span></td>
           <td><ScoreBadge score={product.score} /><span className="cell-note">{product.score_source ?? "Pending"}</span></td>
-          <td className="reasoning"><p>{product.reasoning ?? "Scoring has not run yet."}</p><small>{product.last_scored_at ? new Date(product.last_scored_at).toLocaleString() : "Not scored"}</small></td>
+          <td className="reasoning"><p>{product.reasoning ?? "Scoring has not run yet."}</p><small>{product.last_scored_at ? `Scored ${new Date(product.last_scored_at).toLocaleString()}` : "Not scored"}</small></td>
         </tr>)}</tbody>
       </table>
     </div>
   );
+}
+
+function numericResult(task: TaskState, key: string): number | null {
+  const value = task.result?.[key];
+  return typeof value === "number" ? value : null;
+}
+
+function describeTask(task: TaskState): { label: string; detail: string; tone: string } {
+  if (!terminalStates.has(task.status)) {
+    return { label: `Task ${task.status.toLowerCase()}`, detail: "Celery is processing this request.", tone: "" };
+  }
+  if (task.status !== "SUCCESS") {
+    return { label: "Task failed", detail: "See the worker logs for the safe diagnostic.", tone: "failed" };
+  }
+  const collected = numericResult(task, "collected");
+  const failed = numericResult(task, "failed");
+  const rateLimited = numericResult(task, "rate_limited");
+  if (collected !== null && failed !== null) {
+    const detail = `${collected} trend snapshots collected; ${failed} failed${rateLimited ? ` (${rateLimited} rate-limited)` : ""}.`;
+    return failed > 0
+      ? { label: collected > 0 ? "Completed with warnings" : "No fresh trend data", detail, tone: "warning" }
+      : { label: "Trend collection completed", detail, tone: "success" };
+  }
+  const scraped = numericResult(task, "scraped");
+  if (scraped !== null) {
+    return { label: "Amazon collection completed", detail: `${scraped} products parsed and persisted.`, tone: "success" };
+  }
+  return { label: "Task completed", detail: "The background job finished successfully.", tone: "success" };
 }
