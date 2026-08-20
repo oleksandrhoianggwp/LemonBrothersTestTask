@@ -7,7 +7,7 @@ Re-verified on 2026-08-20 after the data-quality and task-observability fixes in
 The repository contains a runnable MVP for discovering and scoring e-commerce products:
 
 - Amazon Best Sellers collection runs in Playwright and persists products idempotently.
-- Google Trends collection runs in Playwright, captures genuine multi-keyword timeline responses, persists successful snapshots, and stops responsibly after repeated HTTP 429 responses.
+- Google Trends collection runs in Playwright, captures genuine multi-keyword timeline responses, persists successful snapshots, and stops after the first confirmed HTTP 429 while activating a Redis cooldown.
 - Internal Sales Boost supports manual history, CSV import, duplicate handling, and deterministic matching.
 - OpenAI and Gemini scoring share one validated `0..100` score contract.
 - Missing keys, unavailable providers, timeouts, or invalid responses select an explainable deterministic fallback.
@@ -37,7 +37,7 @@ The repository contains a runnable MVP for discovering and scoring e-commerce pr
 
 | Check | Result |
 |---|---|
-| Backend test suite | PASS — 26 tests |
+| Backend test suite | PASS — 34 tests |
 | Python bytecode compilation | PASS |
 | Frontend frozen dependency install | PASS |
 | Frontend TypeScript check | PASS |
@@ -64,7 +64,7 @@ Observed service state:
 | Celery Beat | Running with the six-hour schedule |
 | React/Nginx | Running on port 3000 |
 
-The Compose definition does not pass LLM provider secrets into containers. This deliberately validates the zero-key fallback path and prevents local credentials from being embedded in images or runtime configuration.
+Compose contains only provider-key variable references and passes their runtime values solely to the Celery worker. Real values stay in the ignored local `.env` and are not embedded in images, source, frontend bundles, or committed configuration. The same stack was also started with all provider keys unavailable to validate the zero-key fallback path.
 
 ## Live workflow evidence
 
@@ -72,7 +72,8 @@ The Compose definition does not pass LLM provider secrets into containers. This 
 - Repeating the collection returned 20 updates and 0 creates, confirming idempotent upsert behavior.
 - The repeated collection also completed under the non-root Playwright container user.
 - A clean Amazon run persisted 20/20 unique products with populated title, category, price, rating, review count, URL, and image fields; every persisted category was `Home & Kitchen`.
-- Google Trends returned HTTP 429 for the current public IP. The clean 20-product Celery task completed in about 10 seconds after two bounded browser attempts and returned `0 collected / 20 failed / 20 rate-limited` without fabricated data.
+- Google Trends returned HTTP 429 for the current public IP. The clean 20-product Celery task stopped after exactly one browser attempt and returned `0 collected / 20 failed / 20 rate-limited` without fabricated data. It set the Redis cooldown, and a repeated task completed without launching Playwright.
+- A fully failed Trends run did not enqueue rescoring and did not overwrite the last successful snapshot timestamp. The dashboard distinguishes fresh, stale, and unavailable trend evidence; unavailable evidence is not displayed or scored as zero demand.
 - Deterministic rescoring then completed for all 20 products. Every row used `score_source=fallback`, had reasoning, and had a valid `0..100` score.
 - Live Sales Boost acceptance covered manual creation, duplicate HTTP 409 handling, CSV result counters, and cleanup; the dedicated API and scoring tests cover invalid rows and boost boundaries.
 - Login, populated dashboard, collection controls, task lifecycle, terminal result counters, warning state, score timestamps, and missing/fresh trend labels were verified in the browser.
@@ -88,7 +89,8 @@ The Compose definition does not pass LLM provider secrets into containers. This 
 | `feat/sales-boost` | `d263331`, `1db4746` | `6bc8b86` |
 | `feat/dashboard` | `7cc168b`, `864d5f4` | `1a8bf59` |
 | `test/docs-hardening` | `b17ca6c`, `374438f` | `fbf1e39` |
-| `fix/data-quality-observability` | `9791997`, `5ed6a08`, `92dd8e7` | this delivery |
+| `fix/data-quality-observability` | `9791997`, `5ed6a08`, `92dd8e7` | `190727e` |
+| `fix/final-acceptance-hardening` | `e801588`, `686ca27`, `ebe6292` | this delivery |
 
 ## Security checks
 
@@ -101,6 +103,6 @@ The Compose definition does not pass LLM provider secrets into containers. This 
 
 - Amazon and Google Trends can change markup or network behavior and may present rate limits, consent flows, or CAPTCHA.
 - The collectors intentionally do not bypass platform controls.
-- Google Trends rate-limited the current verification IP. The collector batches up to five keywords, retries once after a delay, then stops the run and reports all affected products clearly. A later run after the provider cooldown is required for fresh external trend values.
+- Google Trends rate-limited the current verification IP. The collector batches up to five keywords, stops after the first confirmed HTTP 429, and suppresses repeated browser attempts during the Redis cooldown. A later run after the provider cooldown is required for fresh external trend values.
 - Keyword extraction is intentionally lightweight and deterministic for MVP scope.
 - Development credentials and the default JWT secret must be replaced outside local evaluation.
