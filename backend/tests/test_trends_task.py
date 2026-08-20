@@ -120,7 +120,7 @@ def test_partial_collection_persists_only_real_snapshot_and_rescores_fresh_produ
             "mini blender": TrendSignal(
                 trend_score=64,
                 change_percent=12.5,
-                raw_summary={"source": "google_trends_browser"},
+                raw_summary={"source": "google_trends_csv_export"},
             ),
             "cooling fan": TrendsCollectionError("timeline unavailable"),
         }
@@ -146,4 +146,7 @@ def test_partial_collection_persists_only_real_snapshot_and_rescores_fresh_produ
     assert failed_row is not None and failed_row.last_trend_collected_at is None
     assert failed_row.last_trend_attempted_at is not None
     assert db_session.scalar(select(func.count()).select_from(TrendSnapshot)) == 1
+    snapshot = db_session.scalar(select(TrendSnapshot))
+    assert snapshot is not None
+    assert snapshot.raw_summary["source"] == "google_trends_csv_export"
     score_delay.assert_called_once_with([fresh.id])
