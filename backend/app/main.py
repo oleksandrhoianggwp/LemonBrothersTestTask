@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api.routes import auth, products, tasks
+from app.api.routes import auth, products, scraping, tasks
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 
@@ -17,4 +17,5 @@ def health() -> dict[str, str]:
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(products.router, prefix="/api")
+app.include_router(scraping.router, prefix="/api")
 app.include_router(tasks.router, prefix="/api")
