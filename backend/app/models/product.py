@@ -35,6 +35,7 @@ class Product(Base):
     )
     last_scraped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_trend_collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_trend_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     trend_snapshots: Mapped[list["TrendSnapshot"]] = relationship(  # noqa: F821

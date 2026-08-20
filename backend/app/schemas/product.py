@@ -27,6 +27,7 @@ class ProductRead(BaseModel):
     updated_at: datetime
     last_scraped_at: datetime | None
     last_trend_collected_at: datetime | None
+    last_trend_attempted_at: datetime | None
     last_scored_at: datetime | None
 
 

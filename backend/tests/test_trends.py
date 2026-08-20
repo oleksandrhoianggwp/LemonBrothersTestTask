@@ -2,7 +2,15 @@ from pathlib import Path
 
 from app.services.trends.keywords import extract_keyword
 from app.services.trends.parser import parse_timeline_response, parse_timeline_response_many
-from app.services.trends.scraper import _keyword_batches
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from app.services.trends.scraper import (
+    TrendsRateLimitError,
+    _collect_batches,
+    _keyword_batches,
+)
 
 
 def test_keyword_extraction_is_deterministic() -> None:
@@ -44,3 +52,20 @@ def test_multi_keyword_timeline_is_split_into_independent_signals() -> None:
 def test_keywords_are_batched_at_google_comparison_limit() -> None:
     keywords = [f"keyword-{index}" for index in range(12)]
     assert _keyword_batches(keywords, 5) == [keywords[:5], keywords[5:10], keywords[10:]]
+
+
+@pytest.mark.asyncio
+async def test_confirmed_429_stops_after_one_batch_attempt() -> None:
+    keywords = [f"keyword-{index}" for index in range(12)]
+    collect = AsyncMock(side_effect=TrendsRateLimitError("HTTP 429"))
+    with patch("app.services.trends.scraper._collect_batch", collect):
+        results = await _collect_batches(
+            AsyncMock(),
+            keywords,
+            delay_seconds=0,
+            batch_size=5,
+        )
+
+    assert collect.await_count == 1
+    assert set(results) == set(keywords)
+    assert all(isinstance(result, TrendsRateLimitError) for result in results.values())

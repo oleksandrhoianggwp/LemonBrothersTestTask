@@ -11,6 +11,7 @@ class ScoringInput(BaseModel):
     reviews_count: int = 0
     trend_score: float = 0
     trend_change_percent: float | None = None
+    trend_data_status: Literal["fresh", "stale", "unavailable"] = "unavailable"
     boost_score: float = 0
 
 

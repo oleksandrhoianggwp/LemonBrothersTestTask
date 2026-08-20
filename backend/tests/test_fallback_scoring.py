@@ -11,6 +11,7 @@ def test_fallback_is_deterministic_and_explained() -> None:
         reviews_count=2500,
         trend_score=72,
         trend_change_percent=18,
+        trend_data_status="fresh",
         boost_score=12,
     )
     first = score_with_fallback(data)
@@ -29,6 +30,7 @@ def test_fallback_clamps_all_inputs() -> None:
             rating=99,
             reviews_count=10**9,
             trend_score=999,
+            trend_data_status="fresh",
             boost_score=999,
         )
     )
@@ -40,5 +42,20 @@ def test_each_signal_increases_score() -> None:
     baseline_score = score_with_fallback(baseline).score
     assert score_with_fallback(baseline.model_copy(update={"rating": 5})).score > baseline_score
     assert score_with_fallback(baseline.model_copy(update={"reviews_count": 10_000})).score > baseline_score
-    assert score_with_fallback(baseline.model_copy(update={"trend_score": 100})).score > baseline_score
+    assert score_with_fallback(
+        baseline.model_copy(update={"trend_score": 100, "trend_data_status": "fresh"})
+    ).score > baseline_score
     assert score_with_fallback(baseline.model_copy(update={"boost_score": 20})).score > baseline_score
+
+
+def test_unavailable_trend_is_not_treated_as_zero_demand() -> None:
+    result = score_with_fallback(
+        ScoringInput(
+            title="Product",
+            category="Category",
+            trend_score=99,
+            trend_data_status="unavailable",
+        )
+    )
+    assert result.score == 0
+    assert "trend is unavailable" in result.reasoning

@@ -37,6 +37,7 @@ class Settings(BaseSettings):
         "https://www.amazon.com/Best-Sellers-Home-Kitchen/zgbs/home-garden/"
     )
     amazon_max_products: int = Field(default=20, ge=1, le=100)
+    trends_rate_limit_cooldown_seconds: int = Field(default=900, ge=60, le=3600)
 
     def provider_api_key(self) -> str:
         provider = self.llm_provider.strip().lower()

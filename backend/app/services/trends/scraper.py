@@ -2,7 +2,7 @@ import asyncio
 import logging
 from urllib.parse import quote
 
-from playwright.async_api import BrowserContext, Response, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import Page, Response, TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 from app.services.trends.parser import (
@@ -27,27 +27,25 @@ def _keyword_batches(keywords: list[str], batch_size: int) -> list[list[str]]:
 
 
 async def _collect_batch(
-    context: BrowserContext,
+    page: Page,
     keywords: list[str],
 ) -> dict[str, TrendSignal]:
-    page = await context.new_page()
     url = (
         "https://trends.google.com/trends/explore?"
-        f"date=today%203-m&geo=US&q={quote(','.join(keywords), safe=',')}&hl=en"
+        f"date=today%203-m&geo=US&q={quote(','.join(keywords), safe=',')}&hl=en-US"
     )
+    loop = asyncio.get_running_loop()
+    timeline_response: asyncio.Future[Response] = loop.create_future()
+
+    def capture_response(response: Response) -> None:
+        if (
+            "/trends/api/widgetdata/multiline" in response.url
+            and not timeline_response.done()
+        ):
+            timeline_response.set_result(response)
+
+    page.on("response", capture_response)
     try:
-        loop = asyncio.get_running_loop()
-        timeline_response: asyncio.Future[Response] = loop.create_future()
-
-        def capture_response(response: Response) -> None:
-            response_url = response.url
-            if (
-                "/trends/api/widgetdata/multiline" in response_url
-                and not timeline_response.done()
-            ):
-                timeline_response.set_result(response)
-
-        page.on("response", capture_response)
         navigation = await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
         if navigation is not None and navigation.status == 429:
             raise TrendsRateLimitError("Google Trends page failed with status 429")
@@ -55,6 +53,7 @@ async def _collect_batch(
             raise TrendsCollectionError(
                 f"Google Trends page failed with status {navigation.status}"
             )
+        await _accept_consent_if_present(page)
         response = await asyncio.wait_for(timeline_response, timeout=45)
         if response.status == 429:
             raise TrendsRateLimitError("Google Trends browser request failed with status 429")
@@ -64,77 +63,92 @@ async def _collect_batch(
     except (TimeoutError, PlaywrightTimeoutError, TrendsParsingError) as exc:
         raise TrendsCollectionError("Google Trends browser timeline was unavailable") from exc
     finally:
-        await page.close()
+        page.remove_listener("response", capture_response)
+
+
+async def _accept_consent_if_present(page: Page) -> bool:
+    selectors = (
+        'button:has-text("Accept all")',
+        'button:has-text("I agree")',
+        'button:has-text("Agree")',
+    )
+    for selector in selectors:
+        button = page.locator(selector).first
+        if await button.count() and await button.is_visible():
+            await button.click(timeout=5_000)
+            await page.wait_for_load_state("domcontentloaded", timeout=15_000)
+            logger.info("trends_consent_accepted")
+            return True
+    return False
+
+
+async def _collect_batches(
+    page: Page,
+    keywords: list[str],
+    delay_seconds: float,
+    batch_size: int,
+) -> dict[str, TrendSignal | TrendsCollectionError]:
+    results: dict[str, TrendSignal | TrendsCollectionError] = {}
+    batches = _keyword_batches(keywords, max(1, min(5, batch_size)))
+    for batch_index, batch in enumerate(batches):
+        try:
+            batch_signals = await _collect_batch(page, batch)
+            results.update(batch_signals)
+            for keyword in batch:
+                if keyword not in batch_signals:
+                    results[keyword] = TrendsCollectionError(
+                        "Google Trends returned no timeline for this keyword"
+                    )
+        except TrendsRateLimitError as exc:
+            for affected_batch in batches[batch_index:]:
+                for keyword in affected_batch:
+                    results[keyword] = exc
+            logger.warning(
+                "trend_collection_stopped_after_rate_limit affected_keywords=%s reason=%s",
+                sum(len(item) for item in batches[batch_index:]),
+                str(exc),
+            )
+            break
+        except TrendsCollectionError as exc:
+            for keyword in batch:
+                results[keyword] = exc
+            logger.warning(
+                "trend_batch_failed batch_size=%s failure=%s reason=%s",
+                len(batch),
+                type(exc).__name__,
+                str(exc),
+            )
+        if delay_seconds and batch_index < len(batches) - 1:
+            await asyncio.sleep(delay_seconds)
+    return results
 
 
 async def collect_google_trends(
     keywords: list[str],
     delay_seconds: float = 2.0,
     batch_size: int = 5,
-    attempts: int = 2,
-    rate_limit_backoff_seconds: float = 8.0,
 ) -> dict[str, TrendSignal | TrendsCollectionError]:
-    results: dict[str, TrendSignal | TrendsCollectionError] = {}
-    if not keywords:
-        return results
+    unique_keywords = list(
+        dict.fromkeys(keyword.strip() for keyword in keywords if keyword.strip())
+    )
+    if not unique_keywords:
+        return {}
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
         context = await browser.new_context(
             locale="en-US",
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
-            ),
+            timezone_id="America/New_York",
         )
+        page = await context.new_page()
+        page.set_default_timeout(15_000)
         try:
-            batches = _keyword_batches(keywords, max(1, min(5, batch_size)))
-            for batch_index, batch in enumerate(batches):
-                batch_error: TrendsCollectionError | None = None
-                for attempt in range(1, max(1, attempts) + 1):
-                    try:
-                        batch_signals = await _collect_batch(context, batch)
-                        results.update(batch_signals)
-                        for keyword in batch:
-                            if keyword not in batch_signals:
-                                results[keyword] = TrendsCollectionError(
-                                    "Google Trends returned no timeline for this keyword"
-                                )
-                        batch_error = None
-                        break
-                    except TrendsRateLimitError as exc:
-                        batch_error = exc
-                        logger.warning(
-                            "trend_batch_rate_limited batch_size=%s attempt=%s reason=%s",
-                            len(batch),
-                            attempt,
-                            str(exc),
-                        )
-                        if attempt < max(1, attempts):
-                            await asyncio.sleep(rate_limit_backoff_seconds * attempt)
-                    except TrendsCollectionError as exc:
-                        batch_error = exc
-                        logger.warning(
-                            "trend_batch_failed batch_size=%s failure=%s reason=%s",
-                            len(batch),
-                            type(exc).__name__,
-                            str(exc),
-                        )
-                        break
-                if batch_error is not None:
-                    for keyword in batch:
-                        results[keyword] = batch_error
-                    if isinstance(batch_error, TrendsRateLimitError):
-                        for remaining_batch in batches[batch_index + 1 :]:
-                            for keyword in remaining_batch:
-                                results[keyword] = batch_error
-                        logger.warning(
-                            "trend_collection_stopped_after_rate_limit remaining_keywords=%s",
-                            sum(len(item) for item in batches[batch_index + 1 :]),
-                        )
-                        break
-                if delay_seconds:
-                    await asyncio.sleep(delay_seconds)
+            return await _collect_batches(
+                page,
+                unique_keywords,
+                delay_seconds=delay_seconds,
+                batch_size=batch_size,
+            )
         finally:
+            await page.close()
             await context.close()
             await browser.close()
-    return results
