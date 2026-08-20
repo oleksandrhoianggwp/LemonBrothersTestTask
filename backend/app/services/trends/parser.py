@@ -13,16 +13,17 @@ class TrendSignal:
     raw_summary: dict[str, int | float | str | None]
 
 
-def parse_timeline_response(raw: str) -> TrendSignal:
+def _timeline_body(raw: str) -> dict:
     cleaned = raw.strip()
     if cleaned.startswith(")]}'"):
         cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[4:]
     try:
-        body = json.loads(cleaned)
-        timeline = body["default"]["timelineData"]
-        values = [float(point["value"][0]) for point in timeline if point.get("value")]
-    except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError) as exc:
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
         raise TrendsParsingError("Google Trends returned an unreadable timeline") from exc
+
+
+def _signal_from_values(values: list[float], series_count: int) -> TrendSignal:
     if not values:
         raise TrendsParsingError("Google Trends timeline contained no values")
 
@@ -47,5 +48,36 @@ def parse_timeline_response(raw: str) -> TrendSignal:
             "recent_average": round(recent, 2),
             "previous_average": round(previous, 2) if previous is not None else None,
             "source": "google_trends_browser",
+            "series_count": series_count,
         },
     )
+
+
+def parse_timeline_response_many(
+    raw: str,
+    keywords: list[str],
+) -> dict[str, TrendSignal]:
+    if not keywords:
+        return {}
+    try:
+        timeline = _timeline_body(raw)["default"]["timelineData"]
+        values_by_series: list[list[float]] = [[] for _ in keywords]
+        for point in timeline:
+            point_values = point.get("value") or []
+            for index in range(min(len(point_values), len(keywords))):
+                values_by_series[index].append(float(point_values[index]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TrendsParsingError("Google Trends returned an unreadable timeline") from exc
+
+    signals = {
+        keyword: _signal_from_values(values, len(keywords))
+        for keyword, values in zip(keywords, values_by_series, strict=True)
+        if values
+    }
+    if not signals:
+        raise TrendsParsingError("Google Trends timeline contained no values")
+    return signals
+
+
+def parse_timeline_response(raw: str) -> TrendSignal:
+    return parse_timeline_response_many(raw, ["keyword"])["keyword"]
