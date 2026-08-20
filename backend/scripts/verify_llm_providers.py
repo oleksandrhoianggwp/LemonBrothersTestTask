@@ -13,6 +13,7 @@ SAMPLE = ScoringInput(
     reviews_count=1842,
     trend_score=76,
     trend_change_percent=21,
+    trend_data_status="fresh",
     boost_score=11,
 )
 

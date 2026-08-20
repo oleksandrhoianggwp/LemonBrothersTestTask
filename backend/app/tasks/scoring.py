@@ -46,6 +46,15 @@ def rescore_all_products(product_ids: list[int] | None = None) -> dict[str, int]
                 continue
             keyword = product.keyword or extract_keyword(product.title)
             boost = calculate_sales_boost(product.title, product.category, keyword, history)
+            if product.last_trend_collected_at is None:
+                trend_data_status = "unavailable"
+            elif (
+                product.last_trend_attempted_at is not None
+                and product.last_trend_attempted_at > product.last_trend_collected_at
+            ):
+                trend_data_status = "stale"
+            else:
+                trend_data_status = "fresh"
             result = engine.score(
                 ScoringInput(
                     title=product.title,
@@ -55,6 +64,7 @@ def rescore_all_products(product_ids: list[int] | None = None) -> dict[str, int]
                     reviews_count=product.reviews_count,
                     trend_score=product.trend_score,
                     trend_change_percent=product.trend_change_percent,
+                    trend_data_status=trend_data_status,
                     boost_score=boost,
                 )
             )
