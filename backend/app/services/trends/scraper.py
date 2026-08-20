@@ -1,13 +1,16 @@
 import asyncio
 import logging
+from pathlib import Path
 from urllib.parse import quote
 
-from playwright.async_api import Page, Response, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Locator, Page, Response, TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 from app.services.trends.parser import (
     TrendSignal,
     TrendsParsingError,
+    parse_trends_csv,
     parse_timeline_response_many,
 )
 
@@ -22,8 +25,75 @@ class TrendsRateLimitError(TrendsCollectionError):
     pass
 
 
+_DOWNLOAD_SELECTORS = (
+    'button[aria-label*="download" i]',
+    '[role="button"][aria-label*="download" i]',
+    'button[aria-label*="csv" i]',
+    'button[title*="download" i]',
+    ".widget-actions-item.export",
+    'button:has-text("Download")',
+    'button:has-text("file_download")',
+)
+
+
 def _keyword_batches(keywords: list[str], batch_size: int) -> list[list[str]]:
     return [keywords[index : index + batch_size] for index in range(0, len(keywords), batch_size)]
+
+
+async def _download_button(page: Page) -> Locator | None:
+    heading = page.get_by_text("Interest over time", exact=True).first
+    try:
+        await heading.wait_for(state="visible", timeout=20_000)
+    except PlaywrightTimeoutError:
+        logger.info("trends_csv_export_unavailable reason=interest_widget_missing")
+        return None
+
+    scopes: list[Page | Locator] = []
+    widget = heading.locator("xpath=ancestor::widget[1]")
+    if await widget.count():
+        scopes.append(widget)
+    timeseries_widget = page.locator('widget[type="TIMESERIES"]').first
+    if await timeseries_widget.count():
+        scopes.append(timeseries_widget)
+    scopes.append(page)
+
+    for scope in scopes:
+        for selector in _DOWNLOAD_SELECTORS:
+            button = scope.locator(selector).first
+            if await button.count() and await button.is_visible() and await button.is_enabled():
+                return button
+    logger.info("trends_csv_export_unavailable reason=download_control_missing")
+    return None
+
+
+async def _collect_exported_csv(
+    page: Page,
+    keywords: list[str],
+) -> dict[str, TrendSignal] | None:
+    button = await _download_button(page)
+    if button is None:
+        return None
+    try:
+        async with page.expect_download(timeout=15_000) as download_info:
+            await button.click(timeout=10_000)
+        download = await download_info.value
+        download_path = await download.path()
+        if download_path is None:
+            raise TrendsCollectionError("Google Trends CSV download had no local path")
+        raw = await asyncio.to_thread(Path(download_path).read_text, encoding="utf-8-sig")
+        signals = parse_trends_csv(raw, keywords)
+        logger.info(
+            "trends_csv_export_collected series=%s filename=%s",
+            len(signals),
+            download.suggested_filename,
+        )
+        return signals
+    except (OSError, PlaywrightError, TrendsParsingError, TrendsCollectionError) as exc:
+        logger.info(
+            "trends_csv_export_unavailable reason=%s",
+            type(exc).__name__,
+        )
+        return None
 
 
 async def _collect_batch(
@@ -54,6 +124,22 @@ async def _collect_batch(
                 f"Google Trends page failed with status {navigation.status}"
             )
         await _accept_consent_if_present(page)
+
+        if timeline_response.done():
+            captured = timeline_response.result()
+            if captured.status == 429:
+                raise TrendsRateLimitError(
+                    "Google Trends browser request failed with status 429"
+                )
+            if captured.status >= 400:
+                raise TrendsCollectionError(
+                    f"Google Trends browser request failed with status {captured.status}"
+                )
+
+        exported = await _collect_exported_csv(page, keywords)
+        if exported is not None:
+            return exported
+
         response = await asyncio.wait_for(timeline_response, timeout=45)
         if response.status == 429:
             raise TrendsRateLimitError("Google Trends browser request failed with status 429")
