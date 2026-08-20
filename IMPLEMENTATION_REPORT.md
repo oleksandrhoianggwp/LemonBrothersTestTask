@@ -1,13 +1,13 @@
 # Implementation Report
 
-Verified on 2026-08-20 against commit `fbf1e39` before this report was added.
+Re-verified on 2026-08-20 after the data-quality and task-observability fixes in this delivery.
 
 ## Delivery summary
 
 The repository contains a runnable MVP for discovering and scoring e-commerce products:
 
 - Amazon Best Sellers collection runs in Playwright and persists products idempotently.
-- Google Trends collection runs in Playwright, captures genuine timeline responses, and persists successful snapshots.
+- Google Trends collection runs in Playwright, captures genuine multi-keyword timeline responses, persists successful snapshots, and stops responsibly after repeated HTTP 429 responses.
 - Internal Sales Boost supports manual history, CSV import, duplicate handling, and deterministic matching.
 - OpenAI and Gemini scoring share one validated `0..100` score contract.
 - Missing keys, unavailable providers, timeouts, or invalid responses select an explainable deterministic fallback.
@@ -20,8 +20,8 @@ The repository contains a runnable MVP for discovering and scoring e-commerce pr
 
 | Requirement | Implementation | Verification |
 |---|---|---|
-| Amazon via Playwright | `app/services/amazon.py`, `app/tasks/scraping.py` | Fixture/parser tests plus two live Docker runs |
-| Google Trends via browser | `app/services/trends.py`, `app/tasks/trends.py` | Unit coverage and live browser collection |
+| Amazon via Playwright | `app/services/amazon/parser.py`, `app/services/amazon/scraper.py`, `app/tasks/scraping.py` | Fixture/parser tests plus live Docker runs |
+| Google Trends via browser | `app/services/trends/parser.py`, `app/services/trends/scraper.py`, `app/tasks/trends.py` | Batch/parser tests and live browser collection |
 | Internal Sales Boost | `app/services/boost.py`, Sales Boost API/UI | Manual record and CSV acceptance flow |
 | OpenAI scoring | `app/services/llm/openai.py` | Live provider verification PASS |
 | Gemini scoring | `app/services/llm/gemini.py` | Live provider verification PASS |
@@ -37,7 +37,7 @@ The repository contains a runnable MVP for discovering and scoring e-commerce pr
 
 | Check | Result |
 |---|---|
-| Backend test suite | PASS — 23 tests |
+| Backend test suite | PASS — 26 tests |
 | Python bytecode compilation | PASS |
 | Frontend frozen dependency install | PASS |
 | Frontend TypeScript check | PASS |
@@ -71,11 +71,11 @@ The Compose definition does not pass LLM provider secrets into containers. This 
 - Amazon collection persisted 20 products on the first run.
 - Repeating the collection returned 20 updates and 0 creates, confirming idempotent upsert behavior.
 - The repeated collection also completed under the non-root Playwright container user.
-- Google Trends persisted 9 genuine trend snapshots; 11 requests were rate-limited or otherwise blocked and failed cleanly without fabricated data.
-- Deterministic rescoring completed for all 20 products with valid `0..100` values and reasoning.
-- One Sales Boost item was created manually.
-- Example CSV import produced one created row, one duplicate, and zero invalid rows.
-- Login, populated dashboard, collection controls, task status, scores, reasoning, Trends values, and Sales Boost history were verified in the browser.
+- A clean Amazon run persisted 20/20 unique products with populated title, category, price, rating, review count, URL, and image fields; every persisted category was `Home & Kitchen`.
+- Google Trends returned HTTP 429 for the current public IP. The clean 20-product Celery task completed in about 10 seconds after two bounded browser attempts and returned `0 collected / 20 failed / 20 rate-limited` without fabricated data.
+- Deterministic rescoring then completed for all 20 products. Every row used `score_source=fallback`, had reasoning, and had a valid `0..100` score.
+- Live Sales Boost acceptance covered manual creation, duplicate HTTP 409 handling, CSV result counters, and cleanup; the dedicated API and scoring tests cover invalid rows and boost boundaries.
+- Login, populated dashboard, collection controls, task lifecycle, terminal result counters, warning state, score timestamps, and missing/fresh trend labels were verified in the browser.
 
 ## Git work summary
 
@@ -88,6 +88,7 @@ The Compose definition does not pass LLM provider secrets into containers. This 
 | `feat/sales-boost` | `d263331`, `1db4746` | `6bc8b86` |
 | `feat/dashboard` | `7cc168b`, `864d5f4` | `1a8bf59` |
 | `test/docs-hardening` | `b17ca6c`, `374438f` | `fbf1e39` |
+| `fix/data-quality-observability` | `9791997`, `5ed6a08`, `92dd8e7` | this delivery |
 
 ## Security checks
 
@@ -100,6 +101,6 @@ The Compose definition does not pass LLM provider secrets into containers. This 
 
 - Amazon and Google Trends can change markup or network behavior and may present rate limits, consent flows, or CAPTCHA.
 - The collectors intentionally do not bypass platform controls.
-- Google Trends was partially rate-limited in the acceptance run; successful real snapshots were preserved and failed keywords were reported cleanly.
+- Google Trends rate-limited the current verification IP. The collector batches up to five keywords, retries once after a delay, then stops the run and reports all affected products clearly. A later run after the provider cooldown is required for fresh external trend values.
 - Keyword extraction is intentionally lightweight and deterministic for MVP scope.
 - Development credentials and the default JWT secret must be replaced outside local evaluation.
