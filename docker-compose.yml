@@ -1,0 +1,121 @@
+x-backend-environment: &backend-environment
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-lemonbrothers}:${POSTGRES_PASSWORD:-lemonbrothers}@postgres:5432/${POSTGRES_DB:-lemonbrothers}
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY:-local-development-secret-change-me}
+  JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+  SEED_ADMIN_USERNAME: ${SEED_ADMIN_USERNAME:-admin}
+  SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin123}
+  LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+  LLM_MODEL: ${LLM_MODEL:-gpt-5-mini}
+  AMAZON_BESTSELLERS_URL: ${AMAZON_BESTSELLERS_URL:-https://www.amazon.com/Best-Sellers/zgbs}
+  AMAZON_MAX_PRODUCTS: ${AMAZON_MAX_PRODUCTS:-20}
+
+x-backend-image: &backend-image
+  image: lemonbrothers-backend:local
+  build:
+    context: ./backend
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lemonbrothers}
+      POSTGRES_USER: ${POSTGRES_USER:-lemonbrothers}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lemonbrothers}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lemonbrothers} -d ${POSTGRES_DB:-lemonbrothers}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    <<: *backend-image
+    environment: *backend-environment
+    command: ["/bin/sh", "-c", "alembic upgrade head && python -m app.scripts.seed"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    <<: *backend-image
+    environment: *backend-environment
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  celery-worker:
+    <<: *backend-image
+    environment: *backend-environment
+    command:
+      [
+        "celery",
+        "-A",
+        "app.tasks.celery_app.celery_app",
+        "worker",
+        "--loglevel=INFO",
+        "--concurrency=2",
+      ]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    shm_size: 1gb
+    restart: unless-stopped
+
+  celery-beat:
+    <<: *backend-image
+    environment: *backend-environment
+    command:
+      [
+        "celery",
+        "-A",
+        "app.tasks.celery_app.celery_app",
+        "beat",
+        "--loglevel=INFO",
+        "--schedule=/tmp/celerybeat-schedule",
+      ]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
