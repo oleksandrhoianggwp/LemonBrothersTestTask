@@ -2,6 +2,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from app.services.amazon.parser import (
+    normalize_category,
     parse_amazon_html,
     parse_rating,
     parse_review_count,
@@ -16,7 +17,7 @@ def test_parse_amazon_fixture_normalizes_required_fields() -> None:
     assert len(products) == 2
     first = products[0]
     assert first.title == "Portable Rechargeable Neck Fan"
-    assert first.category == "Best Sellers in Home & Kitchen"
+    assert first.category == "Home & Kitchen"
     assert first.price == Decimal("29.99")
     assert first.rating == 4.6
     assert first.reviews_count == 12_345
@@ -40,3 +41,8 @@ def test_review_and_rating_normalization() -> None:
     assert parse_review_count("2.5K ratings") == 2500
     assert parse_review_count("1 234") == 1234
     assert parse_rating("4,8 out of 5") == 4.8
+
+
+def test_category_normalization_rejects_generic_banner() -> None:
+    assert normalize_category("Best Sellers in Home & Kitchen") == "Home & Kitchen"
+    assert normalize_category("Amazon Best Sellers") == "Unknown"

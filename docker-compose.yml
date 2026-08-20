@@ -9,7 +9,7 @@ x-backend-environment: &backend-environment
   SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin123}
   LLM_PROVIDER: ${LLM_PROVIDER:-openai}
   LLM_MODEL: ${LLM_MODEL:-gpt-5-mini}
-  AMAZON_BESTSELLERS_URL: ${AMAZON_BESTSELLERS_URL:-https://www.amazon.com/Best-Sellers/zgbs}
+  AMAZON_BESTSELLERS_URL: ${AMAZON_BESTSELLERS_URL:-https://www.amazon.com/Best-Sellers-Home-Kitchen/zgbs/home-garden/}
   AMAZON_MAX_PRODUCTS: ${AMAZON_MAX_PRODUCTS:-20}
 
 x-backend-image: &backend-image
